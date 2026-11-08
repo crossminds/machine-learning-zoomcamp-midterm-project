@@ -1,0 +1,11 @@
+.idea
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Raw (uncompressed) data - only the compressed dataset/creditcard.csv.gz is committed
+dataset/*.csv
+dataset/*.parquet
