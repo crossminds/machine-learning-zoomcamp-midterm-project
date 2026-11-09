@@ -21,7 +21,7 @@ For peer review - where each grading criterion is evidenced in this repo:
 | Model deployment | `predict.py` - FastAPI web service. See [Run the service](#-run-the-service). |
 | Dependency and environment management | `pyproject.toml` + `uv.lock`, virtual env in `.venv` - see [Setup](#️-setup). |
 | Containerization | `Dockerfile` - build and run instructions in [Run with Docker](#-run-with-docker). |
-| Cloud deployment | Not implemented for now (nice to have) - see [Status](#-status). |
+| Cloud deployment | Google Cloud Run, live at <https://credit-card-fraud-gtnace3nia-ew.a.run.app/docs> - deployment code in `deploy/cloudrun.sh`, steps and test output in [Cloud deployment](#️-cloud-deployment-google-cloud-run). |
 
 ## 🎯 Problem description
 
@@ -197,14 +197,24 @@ so this step is optional before running the service.
 
 ### 🐳 Run with Docker
 
+From the project root:
+
 ```bash
+# 1. Build the image from the Dockerfile and name it "credit-card-fraud" (~1-2 min the first time)
 docker build -t credit-card-fraud .
+
+# 2. Run it: -p maps container port 9696 to localhost:9696, --rm removes the container on exit
 docker run -it --rm -p 9696:9696 credit-card-fraud
 ```
 
-The image contains only the runtime dependencies (installed from `uv.lock`, so
-the same library versions the model was trained with), `predict.py`,
-`common.py` and the model.
+Check it is up (in a second terminal) with `curl localhost:9696/health`, or
+open <http://localhost:9696/docs>. Stop it with Ctrl+C. To run it in the
+background instead, replace `-it` with `-d --name fraud` and stop it later
+with `docker stop fraud`.
+
+The image (~960 MB) contains only the runtime dependencies (installed from
+`uv.lock`, so the same library versions the model was trained with),
+`predict.py`, `common.py` and the model.
 
 ### 🐍 Run with Python
 
@@ -270,6 +280,91 @@ uv run pytest
 API tests (`tests/test_predict.py`): health check, a known fraud is flagged,
 an average transaction is not, and invalid input is rejected.
 
+## ☁️ Cloud deployment (Google Cloud Run)
+
+**Live service:** <https://credit-card-fraud-gtnace3nia-ew.a.run.app>
+
+- Interactive API docs: <https://credit-card-fraud-gtnace3nia-ew.a.run.app/docs> - open `POST /predict`, click **Try it out**,
+  then **Execute** (pre-filled with a real fraud transaction).
+- Health check: <https://credit-card-fraud-gtnace3nia-ew.a.run.app/health>
+
+> The service scales to zero when idle, so the first request after a quiet
+> period can take a few seconds.
+
+Test it with the same client as locally:
+
+```bash
+uv run python predict_test.py --url https://credit-card-fraud-gtnace3nia-ew.a.run.app
+```
+
+Output from the deployed service (identical to the local Docker run):
+
+```
+Service at https://credit-card-fraud-gtnace3nia-ew.a.run.app: {'status': 'ok', 'model': 'xgboost'}
+
+Amount      0.76 EUR | fraud_probability = 0.0006 | predicted: legit | actual: fraud | WRONG
+Amount      1.18 EUR | fraud_probability = 0.9991 | predicted: FRAUD | actual: fraud | correct
+Amount     65.00 EUR | fraud_probability = 0.9655 | predicted: FRAUD | actual: fraud | correct
+Amount      0.00 EUR | fraud_probability = 0.0406 | predicted: legit | actual: fraud | WRONG
+Amount     76.94 EUR | fraud_probability = 0.9835 | predicted: FRAUD | actual: fraud | correct
+Amount     21.20 EUR | fraud_probability = 0.0001 | predicted: legit | actual: legit | correct
+Amount      1.00 EUR | fraud_probability = 0.0003 | predicted: legit | actual: legit | correct
+Amount     32.70 EUR | fraud_probability = 0.0000 | predicted: legit | actual: legit | correct
+Amount    154.50 EUR | fraud_probability = 0.0000 | predicted: legit | actual: legit | correct
+Amount     20.90 EUR | fraud_probability = 0.0001 | predicted: legit | actual: legit | correct
+
+8/10 correct (threshold = 0.702853)
+```
+
+Or with `curl` (the same request as in [Using the API](#-using-the-api), against
+the cloud URL):
+
+```bash
+curl -s https://credit-card-fraud-gtnace3nia-ew.a.run.app/health
+```
+
+<!-- screenshot: images/cloudrun-predict-test.png -->
+
+### How it is deployed
+
+`deploy/cloudrun.sh` deploys with `gcloud run deploy --source .`: Cloud Build
+builds the image from the `Dockerfile` in the cloud and stores it in Artifact
+Registry, then Cloud Run serves it over HTTPS. No local Docker build or
+manual image push is needed. `.gcloudignore` keeps the upload down to the
+files the image needs.
+
+**One-time setup:**
+
+1. Create a Google Cloud account and a project with billing enabled (new
+   accounts get free trial credit).
+2. Install the [gcloud CLI](https://cloud.google.com/sdk/docs/install) and log in:
+   ```bash
+   gcloud init        # log in and pick the project
+   ```
+
+**Deploy, inspect, remove:**
+
+```bash
+./deploy/cloudrun.sh deploy    # enables the APIs, builds, deploys, prints the URL
+./deploy/cloudrun.sh url       # prints the URL of the running service
+./deploy/cloudrun.sh delete    # deletes the service and its images
+```
+
+Region and service name default to `europe-west1` / `credit-card-fraud`. You
+can override them, e.g. `REGION=us-central1 ./deploy/cloudrun.sh deploy`.
+
+### Cost and abuse protection
+
+The endpoint is public so reviewers can test it without credentials. Cost is
+capped in the deploy settings instead:
+
+- `--max-instances 1` - at most one container, however many requests arrive.
+- `--concurrency 20`, `--timeout 10` - bounded work per container.
+- Scales to zero when idle (the default), so idle time costs nothing.
+- 512 MiB memory - the container uses ~140 MiB.
+
+With review-level traffic this stays within Cloud Run's free tier.
+
 ## 🗂️ Project layout
 
 ```
@@ -286,7 +381,11 @@ notebook.ipynb        # data prep, EDA, feature importance, model selection + tu
 train.py              # trains the final model -> models/model.bin
 predict.py            # FastAPI web service
 predict_test.py       # sends real test-set transactions to the service
+deploy/
+  cloudrun.sh         # deploy to / remove from Google Cloud Run
 Dockerfile            # container for the web service
+.dockerignore         # keeps the Docker build context small
+.gcloudignore         # files not uploaded to Cloud Build
 pyproject.toml        # dependencies (uv)
 uv.lock               # pinned dependency versions
 ```
@@ -294,8 +393,5 @@ uv.lock               # pinned dependency versions
 ## ✅ Status
 
 Done: problem definition, data preparation, EDA, model training and tuning,
-training script, web service, Docker container, tests.
-
-Not implemented for now: cloud deployment (nice to have). The Docker image
-runs as-is on any container platform (e.g. Google Cloud Run, AWS App Runner,
-Fly.io).
+training script, web service, Docker container, tests, and deployment to
+Google Cloud Run (<https://credit-card-fraud-gtnace3nia-ew.a.run.app>).

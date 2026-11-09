@@ -1,0 +1,15 @@
+# Files NOT uploaded to Cloud Build by `gcloud run deploy --source .`
+# (only what the Dockerfile needs is sent; mirrors .dockerignore)
+.gcloudignore
+.git/
+.gitignore
+.venv/
+.idea/
+*.iml
+__pycache__/
+.ipynb_checkpoints/
+dataset/
+notebook.ipynb
+tests/
+scripts/
+deploy/

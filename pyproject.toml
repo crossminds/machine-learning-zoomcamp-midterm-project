@@ -28,3 +28,6 @@ dev = [
 
 [tool.uv]
 package = false
+# xgboost pulls in NVIDIA's NCCL library (~345 MB) for multi-GPU training on Linux.
+# This project trains and serves on CPU only, so it is excluded (marker never matches).
+override-dependencies = ["nvidia-nccl-cu13; sys_platform == 'never'"]
